@@ -68,6 +68,7 @@ if not os.path.exists(args.save_folder):
     os.mkdir(args.save_folder)
 
 
+@profile
 def train():
     if args.dataset == 'COCO':
         if args.dataset_root == VOC_ROOT:
@@ -97,7 +98,7 @@ def train():
 
     if args.cuda:
         net = torch.nn.DataParallel(ssd_net)
-        cudnn.benchmark = True
+        cudnn.benchmark = False
 
     if args.resume:
         print('Resuming training, loading {}...'.format(args.resume))
@@ -162,7 +163,13 @@ def train():
             adjust_learning_rate(optimizer, args.gamma, step_index)
 
         # load train data
-        images, targets = next(batch_iterator)
+        # images, targets = next(batch_iterator)
+
+        try:
+            images, targets = next(batch_iterator)
+        except StopIteration:
+            batch_iterator = iter(data_loader)
+            images, targets = next(batch_iterator)
 
         if args.cuda:
             images = Variable(images.cuda())
@@ -185,7 +192,8 @@ def train():
 
         if iteration % 10 == 0:
             print('timer: %.4f sec.' % (t1 - t0))
-            print('iter ' + repr(iteration) + ' || Loss: %.4f ||' % (loss.data[0]), end=' ')
+            print('iter ' + repr(iteration) + ' || Loss: %.4f ||' %
+                  (loss.data[0]), end=' ')
 
         if args.visdom:
             update_vis_plot(iteration, loss_l.data[0], loss_c.data[0],
@@ -199,6 +207,7 @@ def train():
                args.save_folder + '' + args.dataset + '.pth')
 
 
+@profile
 def adjust_learning_rate(optimizer, gamma, step):
     """Sets the learning rate to the initial LR decayed by 10 at every
         specified step
@@ -237,7 +246,8 @@ def update_vis_plot(iteration, loc, conf, window1, window2, update_type,
                     epoch_size=1):
     viz.line(
         X=torch.ones((1, 3)).cpu() * iteration,
-        Y=torch.Tensor([loc, conf, loc + conf]).unsqueeze(0).cpu() / epoch_size,
+        Y=torch.Tensor([loc, conf, loc + conf]
+                       ).unsqueeze(0).cpu() / epoch_size,
         win=window1,
         update=update_type
     )

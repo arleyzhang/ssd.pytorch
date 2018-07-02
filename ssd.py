@@ -47,6 +47,7 @@ class SSD(nn.Module):
             self.softmax = nn.Softmax(dim=-1)
             self.detect = Detect(num_classes, 0, 200, 0.01, 0.45)
 
+    @profile
     def forward(self, x):
         """Applies network layers and ops on input image(s) x.
 
@@ -99,7 +100,7 @@ class SSD(nn.Module):
             output = self.detect(
                 loc.view(loc.size(0), -1, 4),                   # loc preds
                 self.softmax(conf.view(conf.size(0), -1,
-                             self.num_classes)),                # conf preds
+                                       self.num_classes)),                # conf preds
                 self.priors.type(type(x.data))                  # default boxes
             )
         else:
@@ -110,12 +111,13 @@ class SSD(nn.Module):
             )
         return output
 
+    @profile
     def load_weights(self, base_file):
         other, ext = os.path.splitext(base_file)
         if ext == '.pkl' or '.pth':
             print('Loading weights into state dict...')
             self.load_state_dict(torch.load(base_file,
-                                 map_location=lambda storage, loc: storage))
+                                            map_location=lambda storage, loc: storage))
             print('Finished!')
         else:
             print('Sorry only .pth and .pkl files supported.')
@@ -123,6 +125,7 @@ class SSD(nn.Module):
 
 # This function is derived from torchvision VGG make_layers()
 # https://github.com/pytorch/vision/blob/master/torchvision/models/vgg.py
+@profile
 def vgg(cfg, i, batch_norm=False):
     layers = []
     in_channels = i
@@ -146,6 +149,7 @@ def vgg(cfg, i, batch_norm=False):
     return layers
 
 
+@profile
 def add_extras(cfg, i, batch_norm=False):
     # Extra layers added to VGG for feature scaling
     layers = []
@@ -155,7 +159,7 @@ def add_extras(cfg, i, batch_norm=False):
         if in_channels != 'S':
             if v == 'S':
                 layers += [nn.Conv2d(in_channels, cfg[k + 1],
-                           kernel_size=(1, 3)[flag], stride=2, padding=1)]
+                                     kernel_size=(1, 3)[flag], stride=2, padding=1)]
             else:
                 layers += [nn.Conv2d(in_channels, v, kernel_size=(1, 3)[flag])]
             flag = not flag
@@ -163,6 +167,7 @@ def add_extras(cfg, i, batch_norm=False):
     return layers
 
 
+@profile
 def multibox(vgg, extra_layers, cfg, num_classes):
     loc_layers = []
     conf_layers = []
@@ -171,7 +176,7 @@ def multibox(vgg, extra_layers, cfg, num_classes):
         loc_layers += [nn.Conv2d(vgg[v].out_channels,
                                  cfg[k] * 4, kernel_size=3, padding=1)]
         conf_layers += [nn.Conv2d(vgg[v].out_channels,
-                        cfg[k] * num_classes, kernel_size=3, padding=1)]
+                                  cfg[k] * num_classes, kernel_size=3, padding=1)]
     for k, v in enumerate(extra_layers[1::2], 2):
         loc_layers += [nn.Conv2d(v.out_channels, cfg[k]
                                  * 4, kernel_size=3, padding=1)]
@@ -195,6 +200,7 @@ mbox = {
 }
 
 
+@profile
 def build_ssd(phase, size=300, num_classes=21):
     if phase != "test" and phase != "train":
         print("ERROR: Phase: " + phase + " not recognized")

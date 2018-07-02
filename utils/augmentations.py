@@ -6,6 +6,7 @@ import types
 from numpy import random
 
 
+@profile
 def intersect(box_a, box_b):
     max_xy = np.minimum(box_a[:, 2:], box_b[2:])
     min_xy = np.maximum(box_a[:, :2], box_b[:2])
@@ -13,6 +14,7 @@ def intersect(box_a, box_b):
     return inter[:, 0] * inter[:, 1]
 
 
+@profile
 def jaccard_numpy(box_a, box_b):
     """Compute the jaccard overlap of two sets of boxes.  The jaccard overlap
     is simply the intersection over union of two boxes.
@@ -25,10 +27,10 @@ def jaccard_numpy(box_a, box_b):
         jaccard overlap: Shape: [box_a.shape[0], box_a.shape[1]]
     """
     inter = intersect(box_a, box_b)
-    area_a = ((box_a[:, 2]-box_a[:, 0]) *
-              (box_a[:, 3]-box_a[:, 1]))  # [A,B]
-    area_b = ((box_b[2]-box_b[0]) *
-              (box_b[3]-box_b[1]))  # [A,B]
+    area_a = ((box_a[:, 2] - box_a[:, 0]) *
+              (box_a[:, 3] - box_a[:, 1]))  # [A,B]
+    area_b = ((box_b[2] - box_b[0]) *
+              (box_b[3] - box_b[1]))  # [A,B]
     union = area_a + area_b - inter
     return inter / union  # [A,B]
 
@@ -47,6 +49,7 @@ class Compose(object):
     def __init__(self, transforms):
         self.transforms = transforms
 
+    @profile
     def __call__(self, img, boxes=None, labels=None):
         for t in self.transforms:
             img, boxes, labels = t(img, boxes, labels)
@@ -60,11 +63,13 @@ class Lambda(object):
         assert isinstance(lambd, types.LambdaType)
         self.lambd = lambd
 
+    @profile
     def __call__(self, img, boxes=None, labels=None):
         return self.lambd(img, boxes, labels)
 
 
 class ConvertFromInts(object):
+    @profile
     def __call__(self, image, boxes=None, labels=None):
         return image.astype(np.float32), boxes, labels
 
@@ -73,6 +78,7 @@ class SubtractMeans(object):
     def __init__(self, mean):
         self.mean = np.array(mean, dtype=np.float32)
 
+    @profile
     def __call__(self, image, boxes=None, labels=None):
         image = image.astype(np.float32)
         image -= self.mean
@@ -80,6 +86,7 @@ class SubtractMeans(object):
 
 
 class ToAbsoluteCoords(object):
+    @profile
     def __call__(self, image, boxes=None, labels=None):
         height, width, channels = image.shape
         boxes[:, 0] *= width
@@ -91,6 +98,7 @@ class ToAbsoluteCoords(object):
 
 
 class ToPercentCoords(object):
+    @profile
     def __call__(self, image, boxes=None, labels=None):
         height, width, channels = image.shape
         boxes[:, 0] /= width
@@ -105,9 +113,10 @@ class Resize(object):
     def __init__(self, size=300):
         self.size = size
 
+    @profile
     def __call__(self, image, boxes=None, labels=None):
         image = cv2.resize(image, (self.size,
-                                 self.size))
+                                   self.size))
         return image, boxes, labels
 
 
@@ -118,6 +127,7 @@ class RandomSaturation(object):
         assert self.upper >= self.lower, "contrast upper must be >= lower."
         assert self.lower >= 0, "contrast lower must be non-negative."
 
+    @profile
     def __call__(self, image, boxes=None, labels=None):
         if random.randint(2):
             image[:, :, 1] *= random.uniform(self.lower, self.upper)
@@ -130,6 +140,7 @@ class RandomHue(object):
         assert delta >= 0.0 and delta <= 360.0
         self.delta = delta
 
+    @profile
     def __call__(self, image, boxes=None, labels=None):
         if random.randint(2):
             image[:, :, 0] += random.uniform(-self.delta, self.delta)
@@ -144,6 +155,7 @@ class RandomLightingNoise(object):
                       (1, 0, 2), (1, 2, 0),
                       (2, 0, 1), (2, 1, 0))
 
+    @profile
     def __call__(self, image, boxes=None, labels=None):
         if random.randint(2):
             swap = self.perms[random.randint(len(self.perms))]
@@ -157,6 +169,7 @@ class ConvertColor(object):
         self.transform = transform
         self.current = current
 
+    @profile
     def __call__(self, image, boxes=None, labels=None):
         if self.current == 'BGR' and self.transform == 'HSV':
             image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
@@ -174,6 +187,7 @@ class RandomContrast(object):
         assert self.upper >= self.lower, "contrast upper must be >= lower."
         assert self.lower >= 0, "contrast lower must be non-negative."
 
+    @profile
     # expects float image
     def __call__(self, image, boxes=None, labels=None):
         if random.randint(2):
@@ -188,6 +202,7 @@ class RandomBrightness(object):
         assert delta <= 255.0
         self.delta = delta
 
+    @profile
     def __call__(self, image, boxes=None, labels=None):
         if random.randint(2):
             delta = random.uniform(-self.delta, self.delta)
@@ -196,11 +211,13 @@ class RandomBrightness(object):
 
 
 class ToCV2Image(object):
+    @profile
     def __call__(self, tensor, boxes=None, labels=None):
         return tensor.cpu().numpy().astype(np.float32).transpose((1, 2, 0)), boxes, labels
 
 
 class ToTensor(object):
+    @profile
     def __call__(self, cvimage, boxes=None, labels=None):
         return torch.from_numpy(cvimage.astype(np.float32)).permute(2, 0, 1), boxes, labels
 
@@ -218,6 +235,7 @@ class RandomSampleCrop(object):
             boxes (Tensor): the adjusted bounding boxes in pt form
             labels (Tensor): the class labels for each bbox
     """
+
     def __init__(self):
         self.sample_options = (
             # using entire original input image
@@ -231,6 +249,7 @@ class RandomSampleCrop(object):
             (None, None),
         )
 
+    @profile
     def __call__(self, image, boxes=None, labels=None):
         height, width, _ = image.shape
         while True:
@@ -260,7 +279,8 @@ class RandomSampleCrop(object):
                 top = random.uniform(height - h)
 
                 # convert to integer rect x1,y1,x2,y2
-                rect = np.array([int(left), int(top), int(left+w), int(top+h)])
+                rect = np.array(
+                    [int(left), int(top), int(left + w), int(top + h)])
 
                 # calculate IoU (jaccard overlap) b/t the cropped and gt boxes
                 overlap = jaccard_numpy(boxes, rect)
@@ -313,17 +333,18 @@ class Expand(object):
     def __init__(self, mean):
         self.mean = mean
 
+    @profile
     def __call__(self, image, boxes, labels):
         if random.randint(2):
             return image, boxes, labels
 
         height, width, depth = image.shape
         ratio = random.uniform(1, 4)
-        left = random.uniform(0, width*ratio - width)
-        top = random.uniform(0, height*ratio - height)
+        left = random.uniform(0, width * ratio - width)
+        top = random.uniform(0, height * ratio - height)
 
         expand_image = np.zeros(
-            (int(height*ratio), int(width*ratio), depth),
+            (int(height * ratio), int(width * ratio), depth),
             dtype=image.dtype)
         expand_image[:, :, :] = self.mean
         expand_image[int(top):int(top + height),
@@ -338,6 +359,7 @@ class Expand(object):
 
 
 class RandomMirror(object):
+    @profile
     def __call__(self, image, boxes, classes):
         _, width, _ = image.shape
         if random.randint(2):
@@ -358,6 +380,7 @@ class SwapChannels(object):
     def __init__(self, swaps):
         self.swaps = swaps
 
+    @profile
     def __call__(self, image):
         """
         Args:
@@ -386,6 +409,7 @@ class PhotometricDistort(object):
         self.rand_brightness = RandomBrightness()
         self.rand_light_noise = RandomLightingNoise()
 
+    @profile
     def __call__(self, image, boxes, labels):
         im = image.copy()
         im, boxes, labels = self.rand_brightness(im, boxes, labels)
@@ -398,6 +422,7 @@ class PhotometricDistort(object):
 
 
 class SSDAugmentation(object):
+    @profile
     def __init__(self, size=300, mean=(104, 117, 123)):
         self.mean = mean
         self.size = size
@@ -413,5 +438,6 @@ class SSDAugmentation(object):
             SubtractMeans(self.mean)
         ])
 
+    @profile
     def __call__(self, img, boxes, labels):
         return self.augment(img, boxes, labels)
