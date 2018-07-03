@@ -68,7 +68,30 @@ if not os.path.exists(args.save_folder):
     os.mkdir(args.save_folder)
 
 
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
+
 def train():
+    batch_time = AverageMeter()
+    data_time = AverageMeter()
+    # losses = AverageMeter()
+
     if args.dataset == 'COCO':
         if args.dataset_root == VOC_ROOT:
             if not os.path.exists(COCO_ROOT):
@@ -147,6 +170,7 @@ def train():
                                   shuffle=True, collate_fn=detection_collate,
                                   pin_memory=True)
     # create batch iterator
+    end = time.time()
     batch_iterator = iter(data_loader)
     for iteration in range(args.start_iter, cfg['max_iter']):
         if args.visdom and iteration != 0 and (iteration % epoch_size == 0):
@@ -170,6 +194,8 @@ def train():
             batch_iterator = iter(data_loader)
             images, targets = next(batch_iterator)
 
+        data_time.update(time.time() - end)
+
         if args.cuda:
             images = Variable(images.cuda())
             targets = [Variable(ann.cuda(), volatile=True) for ann in targets]
@@ -190,8 +216,14 @@ def train():
         conf_loss += loss_c.data[0]
 
         if iteration % 10 == 0:
-            print('timer: %.4f sec.' % (t1 - t0))
-            print('iter ' + repr(iteration) + ' || Loss: %.4f ||' % (loss.data[0]), end=' ')
+            # print('timer: %.4f sec.' % (t1 - t0))
+            print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                  'iter ' + repr(iteration) + '/(%d) || Loss: %.4f ||' %
+                  (cfg['max_iter'], loss.data[0]),
+                  'batch time: %.4f sec' % (t1 - t0),
+                  'batch: %.3f(%.3f)' % (batch_time.val, batch_time.avg),
+                  'data: %.3f(%.3f)' % (data_time.val, data_time.avg)
+                  )
 
         if args.visdom:
             update_vis_plot(iteration, loss_l.data[0], loss_c.data[0],
@@ -201,6 +233,10 @@ def train():
             print('Saving state, iter:', iteration)
             torch.save(ssd_net.state_dict(), 'weights/ssd300_COCO_' +
                        repr(iteration) + '.pth')
+
+        batch_time.update(time.time() - end)
+        end = time.time()
+
     torch.save(ssd_net.state_dict(),
                args.save_folder + '' + args.dataset + '.pth')
 
@@ -243,7 +279,8 @@ def update_vis_plot(iteration, loc, conf, window1, window2, update_type,
                     epoch_size=1):
     viz.line(
         X=torch.ones((1, 3)).cpu() * iteration,
-        Y=torch.Tensor([loc, conf, loc + conf]).unsqueeze(0).cpu() / epoch_size,
+        Y=torch.Tensor([loc, conf, loc + conf]
+                       ).unsqueeze(0).cpu() / epoch_size,
         win=window1,
         update=update_type
     )
