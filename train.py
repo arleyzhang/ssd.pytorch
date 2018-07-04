@@ -126,7 +126,8 @@ def train():
         print('Resuming training, loading {}...'.format(args.resume))
         ssd_net.load_weights(args.resume)
     else:
-        vgg_weights = torch.load(args.save_folder + args.basenet)
+        vgg_weights = torch.load(
+            args.save_folder.split('/')[0] + '/' + args.basenet)
         print('Loading base network...')
         ssd_net.vgg.load_state_dict(vgg_weights)
 
@@ -215,12 +216,15 @@ def train():
         loc_loss += loss_l.data[0]
         conf_loss += loss_c.data[0]
 
+        batch_time.update(time.time() - end)
+        end = time.time()
+
         if iteration % 10 == 0:
             # print('timer: %.4f sec.' % (t1 - t0))
             print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
                   'iter ' + repr(iteration) + '/(%d) || Loss: %.4f ||' %
                   (cfg['max_iter'], loss.data[0]),
-                  'batch time: %.4f sec' % (t1 - t0),
+                  'timer: %.4f sec\t' % (t1 - t0),
                   'batch: %.3f(%.3f)' % (batch_time.val, batch_time.avg),
                   'data: %.3f(%.3f)' % (data_time.val, data_time.avg)
                   )
@@ -231,14 +235,11 @@ def train():
 
         if iteration != 0 and iteration % 5000 == 0:
             print('Saving state, iter:', iteration)
-            torch.save(ssd_net.state_dict(), 'weights/ssd300_COCO_' +
-                       repr(iteration) + '.pth')
-
-        batch_time.update(time.time() - end)
-        end = time.time()
+            torch.save(ssd_net.state_dict(
+            ), '{}/ssd300_{}_{}.pth'.format(args.save_folder, args.dataset, iteration))
 
     torch.save(ssd_net.state_dict(),
-               args.save_folder + '' + args.dataset + '.pth')
+               args.save_folder + '/' + args.dataset + '.pth')
 
 
 def adjust_learning_rate(optimizer, gamma, step):
