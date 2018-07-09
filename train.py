@@ -1,3 +1,6 @@
+from collections import OrderedDict
+import shutil
+
 from data import *
 from utils.augmentations import SSDAugmentation
 from layers.modules import MultiBoxLoss
@@ -51,6 +54,8 @@ parser.add_argument('--visdom', default=False, type=str2bool,
                     help='Use visdom for loss visualization')
 parser.add_argument('--save_folder', default='weights/',
                     help='Directory for saving checkpoint models')
+parser.add_argument('--backbone', default='vgg16', type=str,
+                    help='The backbone models')
 args = parser.parse_args()
 
 
@@ -88,6 +93,10 @@ class AverageMeter(object):
 
 
 def train():
+    # Copy the python script to job_dir.
+    py_file = os.path.abspath(__file__)
+    shutil.copy(py_file, args.save_folder)
+
     batch_time = AverageMeter()
     data_time = AverageMeter()
     # losses = AverageMeter()
@@ -113,14 +122,20 @@ def train():
 
     if args.visdom:
         import visdom
-        viz = visdom.Visdom()
+        global viz
+        viz = visdom.Visdom(port=8098)
 
-    ssd_net = build_ssd('train', cfg['min_dim'], cfg['num_classes'])
+    num_map = {'half': 0.5, 'quarter': 0.25}
+    try:
+        scale = num_map[args.backbone.split('_')[1]]
+    except:
+        scale = 1.0
+    ssd_net = build_ssd('train', cfg['min_dim'], cfg['num_classes'], scale)
     net = ssd_net
 
     if args.cuda:
         net = torch.nn.DataParallel(ssd_net)
-        cudnn.benchmark = True
+        cudnn.benchmark = False
 
     if args.resume:
         print('Resuming training, loading {}...'.format(args.resume))
@@ -129,7 +144,35 @@ def train():
         vgg_weights = torch.load(
             args.save_folder.split('/')[0] + '/' + args.basenet)
         print('Loading base network...')
-        ssd_net.vgg.load_state_dict(vgg_weights)
+        # ssd_net.vgg.load_state_dict(vgg_weights)
+
+        # random initialize the weights
+        # ssd_net.vgg.apply(weights_init)
+
+        # load the personal vgg16 pretrained model
+        model_dict = ssd_net.vgg.state_dict()
+        pretrained_dict = OrderedDict()
+        for k, v in vgg_weights['state_dict'].items():
+        # for k, v in vgg_weights.items():
+            if k.startswith('features'):
+                name = k[16:]
+                pretrained_dict[name] = v
+
+        pretrained_dict = {k: v for k,
+                           v in pretrained_dict.items() if k in model_dict}
+
+        model_dict.update(pretrained_dict)
+        ssd_net.vgg.load_state_dict(model_dict)
+
+        # # load the ssd.pytoch's author's vgg16 model except the last conv6 and conv7
+        # # which initialize throug the xavier method
+        # model_dict = ssd_net.vgg.state_dict()
+        # pretrained_dict = OrderedDict()
+        # for k, v in vgg_weights.items():
+        #     if int(k.split('.')[0]) <= 28:
+        #         pretrained_dict[k] = v
+        # model_dict.update(pretrained_dict)
+        # ssd_net.vgg.load_state_dict(model_dict)
 
     if args.cuda:
         net = net.cuda()
@@ -154,6 +197,7 @@ def train():
     print('Loading the dataset...')
 
     epoch_size = len(dataset) // args.batch_size
+    print('Epoch: ', epoch_size)
     print('Training SSD on:', dataset.name)
     print('Using the specified args:')
     print(args)
@@ -229,9 +273,9 @@ def train():
                   'data: %.3f(%.3f)' % (data_time.val, data_time.avg)
                   )
 
-        if args.visdom:
-            update_vis_plot(iteration, loss_l.data[0], loss_c.data[0],
-                            iter_plot, epoch_plot, 'append')
+        # if args.visdom:
+        #     update_vis_plot(iteration, loss_l.data[0], loss_c.data[0],
+        #                     iter_plot, epoch_plot, 'append')
 
         if iteration != 0 and iteration % 5000 == 0:
             print('Saving state, iter:', iteration)
@@ -265,8 +309,8 @@ def weights_init(m):
 
 def create_vis_plot(_xlabel, _ylabel, _title, _legend):
     return viz.line(
-        X=torch.zeros((1,)).cpu(),
-        Y=torch.zeros((1, 3)).cpu(),
+        X=torch.zeros((1,)).cpu().numpy(),
+        Y=torch.zeros((1, 3)).cpu().numpy(),
         opts=dict(
             xlabel=_xlabel,
             ylabel=_ylabel,
@@ -279,18 +323,19 @@ def create_vis_plot(_xlabel, _ylabel, _title, _legend):
 def update_vis_plot(iteration, loc, conf, window1, window2, update_type,
                     epoch_size=1):
     viz.line(
-        X=torch.ones((1, 3)).cpu() * iteration,
+        X=torch.ones((1, 3)).cpu().numpy() * iteration,
         Y=torch.Tensor([loc, conf, loc + conf]
-                       ).unsqueeze(0).cpu() / epoch_size,
+                       ).unsqueeze(0).cpu().numpy() / epoch_size,
         win=window1,
         update=update_type
     )
     # initialize epoch plot on first iteration
     if iteration == 0:
         viz.line(
-            X=torch.zeros((1, 3)).cpu(),
-            Y=torch.Tensor([loc, conf, loc + conf]).unsqueeze(0).cpu(),
-            win=window2,
+            X=torch.zeros((1, 3)).cpu().numpy(),
+            Y=torch.Tensor([loc, conf, loc + conf]
+                           ).unsqueeze(0).cpu().numpy() / epoch_size,
+            win=window1,
             update=True
         )
 
