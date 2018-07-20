@@ -14,6 +14,9 @@ from data import VOC_CLASSES as labelmap
 import torch.utils.data as data
 
 from ssd import build_ssd
+from drnssd import build_drnssd
+from data import *
+import math
 
 import sys
 import os
@@ -52,6 +55,10 @@ parser.add_argument('--cleanup', default=True, type=str2bool,
                     help='Cleanup and remove results files following eval')
 parser.add_argument('--backbone', default='vgg16', type=str,
                     help='Backbone of the basemodel')
+parser.add_argument('--dataset', default='VOC', choices=['VOC', 'COCO'],
+                    type=str, help='VOC or COCO')
+parser.add_argument('--image_size', default=300, type=int,
+                    help='The size of the input image')
 
 args = parser.parse_args()
 
@@ -76,6 +83,61 @@ YEAR = '2007'
 devkit_path = args.voc_root + 'VOC' + YEAR
 dataset_mean = (104, 117, 123)
 set_type = 'test'
+
+featuremap_list = []
+
+
+def forward_hook(self, input, output):
+    print('{} forward\t input: {}\t output: {}\t'.format(
+        self.__class__.__name__, input[0].size(), output.data.size()))
+    featuremap_list.append(input[0].size(-1))
+
+
+def get_locfeaturemap_size(net, input_size=(300, 300)):
+    hook_list = []
+    size = (1, 3, input_size[0], input_size[1])
+    input = torch.randn(size)
+    if args.cuda:
+        net = net.cuda()
+        input = Variable(input.cuda())
+    else:
+        input = Variable(input)
+
+    for layer in net.loc.children():
+        hook = layer.register_forward_hook(forward_hook)
+        hook_list.append(hook)
+
+    print('The feature map size of the predict layers')
+    output = net(input)
+    # print(featuremap_list)
+
+    for hook in hook_list:
+        hook.remove()
+
+
+def build_model(phase, cfg, input_size=(300, 300)):
+    cfg['min_dim'] = input_size[-1]
+    num_map = {'half': 0.5, 'quarter': 0.25}
+    if args.backbone.startswith('vgg'):
+        try:
+            scale = num_map[args.backbone.split('_')[1]]
+        except:
+            scale = 1.0
+        net = build_ssd(phase, cfg['min_dim'], cfg['num_classes'], cfg,
+                        scale=scale)            # initialize SSD
+    elif args.backbone.startswith('drn'):
+        net = build_drnssd(
+            phase, args.backbone, cfg['min_dim'], cfg['num_classes'], cfg, l2norm=True)
+
+    if phase == 'config':
+        get_locfeaturemap_size(net, input_size)
+        cfg['feature_maps'] = featuremap_list
+        # cfg['steps'] = [math.ceil(cfg['min_dim'] / v)
+        #                 for v in cfg['feature_maps']]
+        # cfg['steps'] = [cfg['min_dim'] / v for v in cfg['feature_maps']]
+        return cfg
+    else:
+        return net
 
 
 class Timer(object):
@@ -425,18 +487,23 @@ if __name__ == '__main__':
     # load net
     num_classes = len(labelmap) + 1                      # +1 for background
 
-    num_map = {'half': 0.5, 'quarter': 0.25}
-    try:
-        scale = num_map[args.backbone.split('_')[1]]
-    except:
-        scale = 1.0
-    net = build_ssd('test', 300, num_classes, scale=scale)            # initialize SSD
+    input_size = (args.image_size, args.image_size)
+    cfg = coco if args.dataset == 'COCO' else voc
+    cfg['min_dim'] = input_size[-1]
+    cfg['num_classes'] = num_classes
+
+    cfg = build_model('config', cfg, input_size)
+    print('The config item is: ')
+    print(cfg)
+    print('')
+    net = build_model('test', cfg, input_size)
+
     net.load_state_dict(torch.load(args.trained_model))
     net.eval()
-    print('Finished loading model!')
+    print('Finished loading model: {}'.format(args.trained_model))
     # load data
     dataset = VOCDetection(args.voc_root, [('2007', set_type)],
-                           BaseTransform(300, dataset_mean),
+                           BaseTransform(cfg['min_dim'], dataset_mean),
                            VOCAnnotationTransform())
     if args.cuda:
         net = net.cuda()

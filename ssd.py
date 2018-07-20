@@ -26,13 +26,15 @@ class SSD(nn.Module):
         head: "multibox head" consists of loc and conf conv layers
     """
 
-    def __init__(self, phase, size, base, extras, head, num_classes, scale=1.0):
+    def __init__(self, phase, size, base, extras, head, cfg, num_classes, scale=1.0):
         super(SSD, self).__init__()
         self.phase = phase
         self.num_classes = num_classes
-        self.cfg = (coco, voc)[num_classes == 21]
-        self.priorbox = PriorBox(self.cfg)
-        self.priors = Variable(self.priorbox.forward(), volatile=True)
+        # self.cfg = (coco, voc)[num_classes == 21]
+        self.cfg = cfg
+        self.priorbox = PriorBox(self.cfg) if phase is not 'config' else None
+        self.priors = Variable(self.priorbox.forward(),
+                               volatile=True) if phase is not 'config' else None
         self.size = size
 
         # SSD network
@@ -144,12 +146,12 @@ def vgg(cfg, i, scale=1.0, batch_norm=False):
     pool5 = nn.MaxPool2d(kernel_size=3, stride=1, padding=1)
     conv6 = nn.Conv2d(int(512 * scale), 1024,
                       kernel_size=3, padding=6, dilation=6)
-    init.xavier_uniform(conv6.weight.data)
-    conv6.bias.data.zero_()
+    # init.xavier_uniform(conv6.weight.data)
+    # conv6.bias.data.zero_()
 
     conv7 = nn.Conv2d(1024, 1024, kernel_size=1)
-    init.xavier_uniform(conv7.weight.data)
-    conv7.bias.data.zero_()
+    # init.xavier_uniform(conv7.weight.data)
+    # conv7.bias.data.zero_()
 
     layers += [pool5, conv6,
                nn.ReLU(inplace=True), conv7, nn.ReLU(inplace=True)]
@@ -193,27 +195,32 @@ def multibox(vgg, extra_layers, cfg, num_classes):
 base = {
     '300': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'C', 512, 512, 512, 'M',
             512, 512, 512],
+    '321': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'C', 512, 512, 512, 'M',
+            512, 512, 512],
     '512': [],
 }
 extras = {
     '300': [256, 'S', 512, 128, 'S', 256, 128, 256, 128, 256],
+    '321': [256, 'S', 512, 128, 'S', 256, 128, 256, 128, 256],
     '512': [],
 }
 mbox = {
     '300': [4, 6, 6, 6, 4, 4],  # number of boxes per feature map location
+    '321': [4, 6, 6, 6, 4, 4],
     '512': [],
 }
 
 
-def build_ssd(phase, size=300, num_classes=21, scale=1.0):
-    if phase != "test" and phase != "train":
+def build_ssd(phase, size=300, num_classes=21, cfg=None, scale=1.0):
+    if phase != "test" and phase != "train" and phase != "config":
         print("ERROR: Phase: " + phase + " not recognized")
         return
-    if size != 300:
-        print("ERROR: You specified size " + repr(size) + ". However, " +
-              "currently only SSD300 (size=300) is supported!")
-        return
+    # if size != 300:
+    #     print("ERROR: You specified size " + repr(size) + ". However, " +
+    #           "currently only SSD300 (size=300) is supported!")
+    #     return
     base_, extras_, head_ = multibox(vgg(base[str(size)], 3, scale=scale),
                                      add_extras(extras[str(size)], 1024),
                                      mbox[str(size)], num_classes)
-    return SSD(phase, size, base_, extras_, head_, num_classes, scale=scale)
+    vggssd_cfg = None if phase == 'config' else cfg
+    return SSD(phase, size, base_, extras_, head_, vggssd_cfg, num_classes, scale=scale)

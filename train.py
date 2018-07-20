@@ -18,6 +18,12 @@ import torch.utils.data as data
 import numpy as np
 import argparse
 
+from drnssd import build_drnssd
+from layers import *
+import math
+
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+
 
 def str2bool(v):
     return v.lower() in ("yes", "true", "t", "1")
@@ -56,6 +62,8 @@ parser.add_argument('--save_folder', default='weights/',
                     help='Directory for saving checkpoint models')
 parser.add_argument('--backbone', default='vgg16', type=str,
                     help='The backbone models')
+parser.add_argument('--image_size', default=300, type=int,
+                    help='The size of the input image')
 args = parser.parse_args()
 
 
@@ -72,24 +80,61 @@ else:
 if not os.path.exists(args.save_folder):
     os.mkdir(args.save_folder)
 
+featuremap_list = []
 
-class AverageMeter(object):
-    """Computes and stores the average and current value"""
 
-    def __init__(self):
-        self.reset()
+def forward_hook(self, input, output):
+    print('{} forward\t input: {}\t output: {}\t'.format(
+        self.__class__.__name__, input[0].size(), output.data.size()))
+    featuremap_list.append(input[0].size(-1))
 
-    def reset(self):
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
-        self.count = 0
 
-    def update(self, val, n=1):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = self.sum / self.count
+def get_locfeaturemap_size(net, input_size=(300, 300)):
+    hook_list = []
+    size = (1, 3, input_size[0], input_size[1])
+    input = torch.randn(size)
+    if args.cuda:
+        net = net.cuda()
+        input = Variable(input.cuda())
+    else:
+        input = Variable(input)
+
+    for layer in net.loc.children():
+        hook = layer.register_forward_hook(forward_hook)
+        hook_list.append(hook)
+
+    print('The feature map size of the predict layers')
+    output = net(input)
+    # print(featuremap_list)
+
+    for hook in hook_list:
+        hook.remove()
+
+
+def build_model(phase, cfg, input_size=(300, 300)):
+    cfg['min_dim'] = input_size[-1]
+    num_map = {'half': 0.5, 'quarter': 0.25}
+    print('build {}_ssd'.format(args.backbone))
+    if args.backbone.startswith('vgg'):
+        try:
+            scale = num_map[args.backbone.split('_')[1]]
+        except:
+            scale = 1.0
+        net = build_ssd(phase, cfg['min_dim'], cfg['num_classes'], cfg,
+                        scale=scale)
+    elif args.backbone.startswith('drn'):
+        net = build_drnssd(
+            phase, args.backbone, cfg['min_dim'], cfg['num_classes'], cfg)
+
+    if phase == 'config':
+        get_locfeaturemap_size(net, input_size)
+        cfg['feature_maps'] = featuremap_list
+        # cfg['steps'] = [math.ceil(cfg['min_dim'] / v)
+        #                 for v in cfg['feature_maps']]
+        # cfg['steps'] = [cfg['min_dim'] / v for v in cfg['feature_maps']]
+        return cfg
+    else:
+        return net
 
 
 def train():
@@ -100,6 +145,7 @@ def train():
     batch_time = AverageMeter()
     data_time = AverageMeter()
     # losses = AverageMeter()
+    input_size = (args.image_size, args.image_size)
 
     if args.dataset == 'COCO':
         if args.dataset_root == VOC_ROOT:
@@ -109,6 +155,7 @@ def train():
                   "--dataset_root was not specified.")
             args.dataset_root = COCO_ROOT
         cfg = coco
+        cfg['min_dim'] = input_size[-1]
         dataset = COCODetection(root=args.dataset_root,
                                 transform=SSDAugmentation(cfg['min_dim'],
                                                           MEANS))
@@ -116,6 +163,7 @@ def train():
         if args.dataset_root == COCO_ROOT:
             parser.error('Must specify dataset if specifying dataset_root')
         cfg = voc
+        cfg['min_dim'] = input_size[-1]
         dataset = VOCDetection(root=args.dataset_root,
                                transform=SSDAugmentation(cfg['min_dim'],
                                                          MEANS))
@@ -123,14 +171,13 @@ def train():
     if args.visdom:
         import visdom
         global viz
-        viz = visdom.Visdom(port=8098)
+        viz = visdom.Visdom()
 
-    num_map = {'half': 0.5, 'quarter': 0.25}
-    try:
-        scale = num_map[args.backbone.split('_')[1]]
-    except:
-        scale = 1.0
-    ssd_net = build_ssd('train', cfg['min_dim'], cfg['num_classes'], scale)
+    # cfg = build_model('config', cfg, input_size)
+    print('The config item is: ')
+    print(cfg)
+    print('')
+    ssd_net = build_model('train', cfg, input_size)
     net = ssd_net
 
     if args.cuda:
@@ -141,38 +188,45 @@ def train():
         print('Resuming training, loading {}...'.format(args.resume))
         ssd_net.load_weights(args.resume)
     else:
-        vgg_weights = torch.load(
+        pretrained_weights = torch.load(
             args.save_folder.split('/')[0] + '/' + args.basenet)
         print('Loading base network...')
-        # ssd_net.vgg.load_state_dict(vgg_weights)
+        if args.backbone.startswith('vgg'):
+            ssd_net.vgg.load_state_dict(pretrained_weights)
 
-        # random initialize the weights
-        # ssd_net.vgg.apply(weights_init)
+            # random initialize the weights
+            # ssd_net.vgg.apply(weights_init)
 
-        # load the personal vgg16 pretrained model
-        model_dict = ssd_net.vgg.state_dict()
-        pretrained_dict = OrderedDict()
-        for k, v in vgg_weights['state_dict'].items():
-        # for k, v in vgg_weights.items():
-            if k.startswith('features'):
-                name = k[16:]
-                pretrained_dict[name] = v
+            # # load the personal vgg16 pretrained model
+            # model_dict = ssd_net.vgg.state_dict()
+            # pretrained_dict = OrderedDict()
+            # # for k, v in vgg_weights['state_dict'].items():
+            # for k, v in vgg_weights.items():
+            #     if k.startswith('features'):
+            #         name = k[16:]
+            #         pretrained_dict[name] = v
 
-        pretrained_dict = {k: v for k,
-                           v in pretrained_dict.items() if k in model_dict}
+            # pretrained_dict = {k: v for k,
+            #                    v in pretrained_dict.items() if k in model_dict}
 
-        model_dict.update(pretrained_dict)
-        ssd_net.vgg.load_state_dict(model_dict)
+            # model_dict.update(pretrained_dict)
+            # ssd_net.vgg.load_state_dict(model_dict)
 
-        # # load the ssd.pytoch's author's vgg16 model except the last conv6 and conv7
-        # # which initialize throug the xavier method
-        # model_dict = ssd_net.vgg.state_dict()
-        # pretrained_dict = OrderedDict()
-        # for k, v in vgg_weights.items():
-        #     if int(k.split('.')[0]) <= 28:
-        #         pretrained_dict[k] = v
-        # model_dict.update(pretrained_dict)
-        # ssd_net.vgg.load_state_dict(model_dict)
+            # # load the ssd.pytoch's author's vgg16 model except the last conv6 and conv7
+            # # which initialize throug the xavier method
+            # model_dict = ssd_net.vgg.state_dict()
+            # pretrained_dict = OrderedDict()
+            # for k, v in vgg_weights.items():
+            #     if int(k.split('.')[0]) <= 28:
+            #         pretrained_dict[k] = v
+            # model_dict.update(pretrained_dict)
+            # ssd_net.vgg.load_state_dict(model_dict)
+        elif args.backbone.startswith('drn'):
+            model_dict = ssd_net.drn.state_dict()
+            pretrained_weights = {k: v for k,
+                                  v in pretrained_weights.items() if k in model_dict}
+            model_dict.update(pretrained_weights)
+            ssd_net.drn.load_state_dict(model_dict)
 
     if args.cuda:
         net = net.cuda()
@@ -180,7 +234,8 @@ def train():
     if not args.resume:
         print('Initializing weights...')
         # initialize newly added layers' weights with xavier method
-        ssd_net.extras.apply(weights_init)
+        if args.backbone.startswith('vgg'):
+            ssd_net.extras.apply(weights_init)
         ssd_net.loc.apply(weights_init)
         ssd_net.conf.apply(weights_init)
 
@@ -197,7 +252,9 @@ def train():
     print('Loading the dataset...')
 
     epoch_size = len(dataset) // args.batch_size
-    print('Epoch: ', epoch_size)
+    print('Epoch_size: {}batch/epoch'.format(epoch_size))
+    epoch_number = cfg['max_iter'] * args.batch_size // len(dataset)
+    print('Epoch: {}'.format(epoch_number))
     print('Training SSD on:', dataset.name)
     print('Using the specified args:')
     print(args)
@@ -273,9 +330,9 @@ def train():
                   'data: %.3f(%.3f)' % (data_time.val, data_time.avg)
                   )
 
-        # if args.visdom:
-        #     update_vis_plot(iteration, loss_l.data[0], loss_c.data[0],
-        #                     iter_plot, epoch_plot, 'append')
+        if iteration % 100 == 0 and args.visdom:
+            update_vis_plot(iteration, loss_l.data[0], loss_c.data[0],
+                            iter_plot, epoch_plot, 'append')
 
         if iteration != 0 and iteration % 5000 == 0:
             print('Saving state, iter:', iteration)
@@ -305,6 +362,25 @@ def weights_init(m):
     if isinstance(m, nn.Conv2d):
         xavier(m.weight.data)
         m.bias.data.zero_()
+
+
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
 
 
 def create_vis_plot(_xlabel, _ylabel, _title, _legend):
